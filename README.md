@@ -1,62 +1,58 @@
-# @solana/client Next.js SSR Bug Reproduction
+# @solana/rpc-subscriptions-channel-websocket Next.js SSR Bug
 
-## Bug Description
+## Bug Summary
 
-When using `@solana/client` with Next.js App Router, importing and calling `createClient()` at module scope in a `"use client"` component causes a build/runtime error:
-
-```
-Module not found: Can't resolve 'ws'
-```
+**Package**: `@solana/rpc-subscriptions-channel-websocket@5.1.0`  
+**Issue**: Incorrect package.json export conditions cause Next.js to load Node.js build during SSR, resulting in `Module not found: Can't resolve 'ws'` error.
 
 ## Root Cause
 
-The `@solana/rpc-subscriptions-channel-websocket` package has incorrect export conditions:
+The `package.json` exports configuration has incorrect mappings:
 
 ```json
 "exports": {
-  "edge-light": { "import": "./dist/index.node.mjs" },  // ❌ should be browser
-  "workerd": { "import": "./dist/index.node.mjs" },     // ❌ should be browser
+  "edge-light": { "import": "./dist/index.node.mjs" },  // ❌ WRONG
+  "workerd": { "import": "./dist/index.node.mjs" },     // ❌ WRONG
   "browser": { "import": "./dist/index.browser.mjs" },  // ✓ correct
   "node": { "import": "./dist/index.node.mjs" }         // ✓ correct
 }
 ```
 
-The `edge-light` and `workerd` conditions incorrectly point to the Node.js build which imports `ws`.
+Problems:
+1. `edge-light` and `workerd` incorrectly point to Node.js build (`index.node.mjs`)
+2. Missing `default` fallback export
+3. No `react-server` condition for RSC/SSR environments
 
-Additionally, there's no `default` fallback export, so Next.js SSR may not match any condition.
+When Next.js processes client components during SSR, it doesn't match the `browser` condition and falls back to the Node.js build which imports the `ws` module.
 
-## Steps to Reproduce
+## Reproduction
 
-1. Clone this repo
-2. `npm install`
-3. `npm run dev`
-4. Visit http://localhost:3000
-5. Observe the error
+This repo demonstrates the issue with a minimal Next.js app:
+
+```bash
+npm install
+npm run build  # ❌ Fails with "Module not found: Can't resolve 'ws'"
+```
+
+The error occurs simply by importing from the package:
+
+```tsx
+import { createWebSocketChannel } from "@solana/rpc-subscriptions-channel-websocket";
+```
 
 ## Expected Behavior
 
-The page should load without errors.
+Next.js should load the browser build (`index.browser.mjs`) during SSR for client components, which uses `globalThis.WebSocket` instead of the `ws` module.
 
-## Actual Behavior
+## Suggested Fix
 
-```
-Module not found: Can't resolve 'ws'
-
-Import trace:
-  ./node_modules/@solana/rpc-subscriptions-channel-websocket/dist/index.node.mjs
-  ./node_modules/@solana/rpc-subscriptions/dist/index.node.mjs
-  ./node_modules/@solana/client/dist/index.node.mjs
-  ./app/providers.tsx
-```
-
-## Suggested Fix (Library Side)
-
-In `@solana/rpc-subscriptions-channel-websocket/package.json`:
+Update `@solana/rpc-subscriptions-channel-websocket/package.json`:
 
 ```json
 "exports": {
   "edge-light": { "import": "./dist/index.browser.mjs" },
   "workerd": { "import": "./dist/index.browser.mjs" },
+  "react-server": { "import": "./dist/index.browser.mjs" },
   "browser": { "import": "./dist/index.browser.mjs" },
   "node": { "import": "./dist/index.node.mjs" },
   "default": { "import": "./dist/index.browser.mjs" }
@@ -65,7 +61,7 @@ In `@solana/rpc-subscriptions-channel-websocket/package.json`:
 
 ## Workaround (User Side)
 
-Use `SolanaProvider` with `config` prop instead of pre-creating the client:
+Use `SolanaProvider` with lazy client creation via `config` prop instead of pre-creating the client:
 
 ```tsx
 "use client";
@@ -88,7 +84,14 @@ export function Providers({ children }: { children: React.ReactNode }) {
 
 ## Environment
 
-- Next.js: latest
-- @solana/client: latest
-- @solana/react-hooks: latest
-- Node.js: 20+
+- **Next.js**: 16.1.1
+- **@solana/rpc-subscriptions-channel-websocket**: 5.1.0
+- **@solana/client**: 1.2.0
+- **Node.js**: 20+
+
+## Related Packages
+
+This issue affects any package that depends on `@solana/rpc-subscriptions-channel-websocket`:
+- `@solana/client`
+- `@solana/rpc-subscriptions`
+- `@solana/react-hooks`
